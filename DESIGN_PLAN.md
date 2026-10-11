@@ -10,6 +10,8 @@ Build a library management system with:
 - rack and floor support for physical books only
 - configurable due dates that are fixed at issue time
 - clear separation between model classes and business logic
+- **users can search for books by various criteria**
+- **view book and book copy transaction history**
 
 ## 2. Core Design Principles
 - Single responsibility: model classes hold data only; business logic handles rules.
@@ -112,6 +114,8 @@ Represents a book title/edition. A book can have multiple copies.
 - `category` (String)
 - `bookType` (BookType) - PHYSICAL, DIGITAL, AUDIO
 - `copies` (Map<String, BookCopy>) - copy ID to BookCopy
+- `publicationYear` (int) - optional, useful for search
+- `publisher` (String) - optional, useful for search
 
 **Enum: BookType**
 ```java
@@ -123,6 +127,7 @@ enum BookType { PHYSICAL, DIGITAL, AUDIO }
 - Digital/audio books do not belong to floors/racks
 - Each Book object manages multiple BookCopy entities
 - Book itself is just a catalog entry; actual borrowing works on copies
+- Book can be searched by title, author, ISBN, category, year, etc.
 
 ---
 
@@ -135,6 +140,7 @@ Represents an individual copy of a book. This is the item issued to a user.
 - `status` (CopyStatus) - AVAILABLE, ISSUED, LOST, DAMAGED, REMOVED
 - `location` (Location) - for physical books only (can be null for digital/audio)
 - `library` (Library) - which library owns this copy
+- `acquiredDate` (LocalDate) - when copy was added to library (useful for history)
 
 **Nested Class: Location**
 - `floor` (Floor)
@@ -150,6 +156,7 @@ enum CopyStatus { AVAILABLE, ISSUED, LOST, DAMAGED, REMOVED }
 - Digital/audio copies do not have floor/rack/location
 - Issue operation works on copy, not book title
 - Status determines if copy can be issued
+- Each copy has acquisition date for historical tracking
 
 ---
 
@@ -208,6 +215,7 @@ enum IssueStatus { ISSUED, RETURNED, OVERDUE, LOST }
 - If admin changes config later, existing issue records keep original due date
 - Return updates status and copy availability
 - Overdue status is calculated based on current date vs due date
+- Complete transaction history for a copy/book is tracked via these records
 
 ---
 
@@ -292,6 +300,9 @@ Manages books and copies.
 - Check if a copy is available for issue
 - Locate physical copies by floor/rack
 - Get book details
+- **Search books by criteria (title, author, ISBN, category, year, type)**
+- **Get all copies of a book**
+- **Get availability summary for a book**
 
 **Key Methods:**
 ```java
@@ -302,6 +313,19 @@ boolean isCopyAvailable(Library library, String copyId)
 BookCopy getCopyById(Library library, String copyId)
 Book getBookById(Library library, String bookId)
 List<BookCopy> getCopiesOnRack(Library library, String rackId)
+
+// SEARCH METHODS
+List<Book> searchBooks(Library library, String title)
+List<Book> searchBooksByAuthor(Library library, String author)
+List<Book> searchBooksByISBN(Library library, String isbn)
+List<Book> searchBooksByCategory(Library library, String category)
+List<Book> searchBooksByType(Library library, BookType bookType)
+List<Book> searchBooksByYear(Library library, int year)
+List<Book> searchBooksByMultipleCriteria(Library library, BookSearchCriteria criteria)
+
+// BOOK COPY LISTING
+List<BookCopy> getAllCopiesOfBook(Library library, String bookId)
+Map<CopyStatus, Integer> getAvailabilitySummary(Library library, String bookId)
 ```
 
 ---
@@ -318,6 +342,8 @@ Handles issue and return workflows.
 - Return a copy with validation
 - Mark copy available again
 - Track issue history
+- **Provide transaction history for a copy**
+- **Provide transaction history for a book title**
 
 **Key Methods:**
 ```java
@@ -327,6 +353,11 @@ IssueRecord getIssueRecord(Library library, String issueId)
 List<IssueRecord> getUserIssueHistory(Library library, String userId)
 boolean isOverdue(IssueRecord issueRecord)
 LocalDate calculateDueDate(LocalDate issueDate, int dueDays)
+
+// HISTORY METHODS
+List<IssueRecord> getCopyTransactionHistory(Library library, String copyId)
+List<IssueRecord> getBookTransactionHistory(Library library, String bookId)
+Map<String, List<IssueRecord>> getFullBookHistory(Library library, String bookId)
 ```
 
 ---
@@ -349,6 +380,24 @@ LibraryConfig getLibraryConfig(Library library)
 
 ---
 
+### 5.6 BookSearchCriteria (Helper Class)
+Encapsulates search parameters for multi-criteria book search.
+
+**Fields:**
+- `title` (String) - optional
+- `author` (String) - optional
+- `isbn` (String) - optional
+- `category` (String) - optional
+- `year` (Integer) - optional
+- `bookType` (BookType) - optional
+
+**Behavior:**
+- At least one field should be non-null for valid search
+- All criteria are combined with AND logic (all must match)
+- Case-insensitive string matching for title, author, category
+
+---
+
 ## 6. Business Rules to Enforce
 
 1. **User Registration:** Only registered users can issue books.
@@ -361,6 +410,8 @@ LibraryConfig getLibraryConfig(Library library)
 8. **Config Isolation:** Once an issue record is created, future config changes do not modify it.
 9. **Return Workflow:** A returned copy goes back to `AVAILABLE` status.
 10. **Library Isolation:** Each library instance has completely independent users, books, copies, floors, racks, and issue records.
+11. **Book Search:** Users can search for books using various criteria (title, author, ISBN, category, year, type).
+12. **Transaction History:** All issue/return transactions are tracked and queryable by book, copy, or user.
 
 ---
 
@@ -386,6 +437,22 @@ LibraryConfig getLibraryConfig(Library library)
 6. Remove copy ID from user's issued set
 7. Update return date in issue record
 
+### Book Search Flow
+1. User provides search criteria (title, author, ISBN, category, year, or combination)
+2. Filter library's books collection against criteria
+3. Return matching Book objects (with all their copies info)
+4. User can then view all copies and their availability status
+
+### Book/Copy History Flow
+1. User selects a book or specific copy
+2. Retrieve all IssueRecords for that book ID or copy ID
+3. Display transaction history including:
+   - When issued
+   - By which user
+   - When returned
+   - Any overdue status
+   - Current status of the copy
+
 ---
 
 ## 8. Exception Handling
@@ -399,7 +466,8 @@ Create custom exceptions to handle validation failures:
   ├── CopyNotFoundException
   ├── BookNotAvailableException
   ├── InvalidLibraryOperationException
-  └── UserNotEligibleException
+  ├── UserNotEligibleException
+  └── InvalidSearchCriteriaException
 ```
 
 ---
@@ -427,6 +495,7 @@ This project will **NOT** include:
 - Advanced reporting or analytics
 - Production-grade validation frameworks
 - Dependency injection containers
+- Full-text search or Lucene indexing
 
 **Focus is on:**
 - Clean class modeling
@@ -434,6 +503,8 @@ This project will **NOT** include:
 - Relationship between classes
 - Interview-style business logic implementation
 - Clear separation of concerns
+- Search and filtering logic
+- Transaction history tracking
 
 ---
 
@@ -442,13 +513,15 @@ This project will **NOT** include:
 Before proceeding to Step 2 (Model Implementation), verify:
 
 - [ ] High-level structure is clear and balanced (not too simple, not over-engineered)
-- [ ] All 12 requirements are addressed in the design
+- [ ] All 12 original + 2 new requirements are addressed in the design
 - [ ] Model classes and business logic classes are properly separated
 - [ ] Enums are used for all fixed categories
 - [ ] Library instance isolation is clear
 - [ ] Issue and return workflows make sense
 - [ ] Exception hierarchy is reasonable
 - [ ] Folder structure is organized logically
+- [ ] Book search functionality covers main search criteria
+- [ ] Transaction history tracking is clear for copy, book, and user level
 
 ---
 
@@ -464,6 +537,17 @@ Before proceeding to Step 2 (Model Implementation), verify:
 
 ---
 
-**Document Version:** 1.0  
+**Document Version:** 2.0  
 **Last Updated:** 2026-10-11  
 **Status:** Pending Review
+
+### Changes in Version 2.0:
+- Added book search functionality by title, author, ISBN, category, year, and type
+- Added multi-criteria search capability with BookSearchCriteria helper class
+- Added transaction history methods for copies and books
+- Added availability summary method
+- Added acquiredDate field to BookCopy for historical tracking
+- Added optional publisher and publicationYear fields to Book
+- Added search and history methods to InventoryService and CirculationService
+- Updated business rules to include search and history functionality
+- Updated scope boundaries to clarify search approach (no full-text indexing)
